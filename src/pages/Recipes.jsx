@@ -337,20 +337,20 @@ export default function Recipes() {
                     }}
                   />
                   {/* top-left code badge */}
-                  <div className="absolute top-3 left-3 bg-white/95 backdrop-blur-sm rounded-full px-2.5 py-1 border border-gray-200 shadow-sm">
+                  {/* <div className="absolute top-3 left-3 bg-white/95 backdrop-blur-sm rounded-full px-2.5 py-1 border border-gray-200 shadow-sm">
                     <span className="text-[11px] font-semibold tracking-wide text-gray-700">
                       #{r.code}
                     </span>
-                  </div>
+                  </div> */}
                   {/* bottom gradient label */}
                   <div className="absolute inset-x-0 bottom-0 p-3 bg-gradient-to-t from-white/95 via-white/70 to-transparent">
                     <div className="flex items-center justify-between gap-2">
                       <h3 className="font-semibold text-gray-900 line-clamp-1">
                         {r.name}
                       </h3>
-                      <span className="text-[11px] px-2 py-1 rounded-full border border-gray-200 bg-white text-gray-700">
+                      {/* <span className="text-[11px] px-2 py-1 rounded-full border border-gray-200 bg-white text-gray-700">
                         {r.base_volume_l || "—"} L
-                      </span>
+                      </span> */}
                     </div>
                     {/* <p className="mt-0.5 text-[11px] text-gray-500 line-clamp-1">
                       Tap to view ingredients & create quote

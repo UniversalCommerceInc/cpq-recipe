@@ -1,0 +1,48 @@
+<!-- /public/social-card.svg -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fff7ed"/>
+      <stop offset="100%" stop-color="#ffe4d6"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fb923c"/>
+      <stop offset="100%" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background -->
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- brand tile + hat -->
+  <g transform="translate(120,145)">
+    <rect x="0" y="0" width="340" height="340" rx="56" fill="url(#brand)"/>
+    <!-- hat -->
+    <g transform="translate(170,170)">
+      <g transform="translate(-110,-95)">
+        <circle cx="70" cy="70" r="50" fill="white"/>
+        <circle cx="160" cy="70" r="50" fill="white"/>
+        <circle cx="115" cy="40" r="55" fill="white"/>
+        <rect x="35" y="115" width="160" height="26" rx="13" fill="white"/>
+        <rect x="28" y="145" width="176" height="70" rx="16" fill="white"/>
+        <rect x="22" y="220" width="188" height="9" rx="4.5" fill="rgba(255,255,255,0.9)"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- Title & subtitle -->
+  <g transform="translate(520,210)">
+    <text x="0" y="0" font-family="Inter,system-ui,-apple-system,Segoe UI,Roboto" font-size="72" font-weight="800"
+          fill="url(#brand)">
+      CPQ-Recipes
+    </text>
+    <text x="0" y="64" font-family="Inter,system-ui,-apple-system,Segoe UI,Roboto" font-size="28" fill="#7c2d12">
+      Create, cost, and quote your recipes.
+    </text>
+  </g>
+
+  <!-- subtle accents -->
+  <circle cx="980" cy="120" r="6" fill="#fb923c"/>
+  <circle cx="1060" cy="520" r="5" fill="#ea580c"/>
+  <circle cx="880" cy="420" r="4" fill="#f59e0b"/>
+</svg>

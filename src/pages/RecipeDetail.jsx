@@ -460,7 +460,7 @@ export default function RecipeDetail() {
           </div>
 
           {/* Sticky Bottom CTA */}
-          <div className="sticky bottom-0 z-30 border-t border-neutral-200 bg-white/95 backdrop-blur">
+          {/* <div className="sticky bottom-0 z-30 border-t border-neutral-200 bg-white/95 backdrop-blur">
             <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
               <button
                 className="flex-1 md:flex-none md:px-5 md:py-2.5 px-4 py-3 rounded-xl border border-neutral-300 text-gray-800 font-semibold hover:bg-neutral-50 transition"
@@ -489,7 +489,7 @@ export default function RecipeDetail() {
                 Create Quote for {r.base_volume_l}L
               </button>
             </div>
-          </div>
+          </div> */}
         </>
       )}
     </div>
