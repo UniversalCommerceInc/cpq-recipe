@@ -1,0 +1,1894 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, matchPath } from "react-router-dom";
+import {
+  Bot,
+  MessageCircle,
+  X,
+  Maximize2,
+  Minimize2,
+  ListOrdered,
+  Eye,
+  FileDown,
+  Plus,
+  Send,
+  Loader2,
+  ExternalLink,
+  RefreshCcw,
+} from "lucide-react";
+import {
+  createQuote,
+  fetchAllQuotes,
+  fetchQuoteById,
+  fetchAllRecipes,
+} from "../lib/api.js";
+
+/* ====== Visual language (Orange, compact, professional) ====== */
+const UI = {
+  bevel: "rounded-2xl",
+  bevelLg: "rounded-3xl",
+  surface: "bg-white/90 backdrop-blur supports-[backdrop-filter]:bg-white/80",
+  border: "border border-neutral-200",
+  ring: "focus:outline-none focus:ring-2 focus:ring-orange-400/40",
+  shadow: "shadow-[0_8px_30px_rgba(0,0,0,0.08)]",
+  subtleShadow: "shadow-[0_2px_8px_rgba(0,0,0,0.06)]",
+  cta: "bg-orange-600 hover:bg-orange-700 text-white",
+};
+
+// Accept codes like ABC-123, SAUC-010, etc.
+const RECIPE_CODE_RE = /^[A-Z]{2,}-\d{2,}$/i;
+
+function extractRecipeCodeFromPath(pathname) {
+  // Only read codes when URL is /recipe/:code
+  const match = matchPath({ path: "/recipe/:code", end: false }, pathname);
+  const raw = match?.params?.code || "";
+  return RECIPE_CODE_RE.test(raw) ? raw.toUpperCase() : null;
+}
+
+/* ====== Helpers ====== */
+const sym = (c) => (c === "INR" ? "₹" : c === "USD" ? "$" : c || "$");
+const toNum = (v) =>
+  v == null || v === "" || Number.isNaN(Number(v)) ? 0 : Number(v);
+const strip = (s) => s?.trim().toLowerCase() || "";
+
+const RECIPE_FALLBACK =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600'>
+      <defs>
+        <linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
+          <stop offset='0%' stop-color='#fff7ed'/>
+          <stop offset='100%' stop-color='#ffe4d6'/>
+        </linearGradient>
+      </defs>
+      <rect width='100%' height='100%' fill='url(#g)'/>
+      <g fill='#ea580c' opacity='0.9'>
+        <circle cx='120' cy='120' r='8'/>
+        <circle cx='200' cy='180' r='5'/>
+        <circle cx='260' cy='90' r='6'/>
+        <circle cx='420' cy='200' r='7'/>
+        <circle cx='620' cy='140' r='6'/>
+      </g>
+      <text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle'
+        font-family='Inter,system-ui' font-size='18' fill='#7c2d12'>
+        Image not available
+      </text>
+    </svg>`
+  );
+
+/* ====== Enhanced Natural Language Processing ====== */
+const INTENT_PATTERNS = {
+  greeting: [
+    /^(hi|hello|hey|heyy|hola|namaste|good\s*(morning|afternoon|evening)|gm|gn|howdy)\b/i,
+    /^(what'?s up|how are you|how'?re you doing)/i,
+  ],
+
+  recipes: [
+    /\b(show|list|get|find|see|view|display)\b.*\b(recipes?|formulas?)\b/i,
+    /\b(recipes?|formulas?)\b.*\b(all|available|list)\b/i,
+    /what.*recipes?.*do.*you.*have/i,
+    /can.*i.*see.*recipes?/i,
+    /available.*recipes?/i,
+    /recipe.*catalog/i,
+  ],
+
+  quotes: [
+    /\b(show|list|get|find|see|view|display)\b.*\b(quotes?)\b/i,
+    /\b(quotes?)\b.*\b(all|recent|latest|list)\b/i,
+    /what.*quotes?.*do.*you.*have/i,
+    /can.*i.*see.*quotes?/i,
+    /quote.*history/i,
+    /recent.*quotes?/i,
+  ],
+
+  latestQuote: [
+    /\b(latest|recent|last|newest)\b.*\bquote\b/i,
+    /\bquote\b.*\b(latest|recent|last|newest)\b/i,
+    /what.*is.*the.*latest.*quote/i,
+    /show.*me.*the.*latest.*quote/i,
+    /get.*latest.*quote/i,
+  ],
+
+  createQuote: [
+    /\b(create|make|generate|new)\b.*\bquote\b/i,
+    /\bquote\b.*\b(create|make|generate|new)\b/i,
+    /i.*want.*to.*create.*quote/i,
+    /can.*you.*create.*quote/i,
+    /need.*new.*quote/i,
+    /quote.*for/i,
+  ],
+
+  help: [
+    /\b(help|assist|what.*can.*you.*do|capabilities|commands)\b/i,
+    /how.*can.*you.*help/i,
+    /what.*are.*you.*capable.*of/i,
+    /what.*can.*i.*ask/i,
+  ],
+
+  specific_recipe: [
+    /\brecipe\b.*#?([A-Z0-9\-]+)/i,
+    /#([A-Z0-9\-]+)/i,
+    /\b([A-Z]{2,}\-\d+)\b/i,
+  ],
+};
+
+const CONVERSATIONAL_RESPONSES = {
+  greeting: [
+    "Hello! I'm here to help you with your CPQ needs. What would you like to work on today?",
+    "Hi there! Ready to dive into some quotes and recipes? What can I help you with?",
+    "Hey! I'm your CPQ assistant. Whether you need to check recipes, review quotes, or create something new, I'm here to help.",
+    "Good to see you! What brings you here today - looking for recipes, quotes, or something else?",
+  ],
+
+  help: [
+    "I'm here to make your CPQ workflow smoother! I can help you browse all your recipes with beautiful visuals, review your quote history, find the latest quotes for specific recipes, and create new quotes with custom parameters.",
+    "Think of me as your CPQ companion! I can show you recipe catalogs, pull up quote histories, find specific quotes, and walk you through creating new ones. What would you like to start with?",
+    "I specialize in helping with recipes and quotes. I can display your recipe collection, show quote summaries, find recent quotes for specific recipes, and guide you through quote creation. Just ask me naturally!",
+  ],
+
+  noResults: [
+    "Hmm, I couldn't find anything matching that. Would you like me to show you what's available instead?",
+    "I don't see any results for that. How about I show you all the options we have?",
+    "Nothing came up for that search. Let me show you what we do have available.",
+    "No matches found. Would you like me to display everything so you can browse?",
+  ],
+
+  thinking: [
+    "Let me check on that for you...",
+    "Looking that up now...",
+    "Searching through the data...",
+    "Give me a moment to find that...",
+    "Checking our records...",
+    "Let me pull that information...",
+  ],
+};
+
+function detectIntent(message) {
+  const msg = message.toLowerCase().trim();
+
+  for (const [intent, patterns] of Object.entries(INTENT_PATTERNS)) {
+    for (const pattern of patterns) {
+      const match = msg.match(pattern);
+      if (match) {
+        return {
+          intent,
+          confidence: 0.8,
+          match: match[1] || match[0],
+          extractedData: extractDataFromMessage(msg, intent, match),
+        };
+      }
+    }
+  }
+
+  return { intent: "unknown", confidence: 0.1 };
+}
+
+function extractDataFromMessage(message, intent, match) {
+  const data = {};
+
+  if (intent === "specific_recipe") {
+    const recipeMatch =
+      message.match(/\b([A-Z]{2,}\-\d+)\b/i) ||
+      message.match(/#([A-Z0-9\-]+)/i);
+    if (recipeMatch) {
+      data.recipeCode = recipeMatch[1].toUpperCase();
+    }
+  }
+
+  if (intent === "createQuote") {
+    const volumeMatch = message.match(/(\d+)\s*(l|liter|litre|gallon)s?/i);
+    if (volumeMatch) {
+      data.volume = parseInt(volumeMatch[1]);
+    }
+
+    const recipeMatch =
+      message.match(/\b([A-Z]{2,}\-\d+)\b/i) ||
+      message.match(/#([A-Z0-9\-]+)/i);
+    if (recipeMatch) {
+      data.recipeCode = recipeMatch[1].toUpperCase();
+    }
+  }
+
+  return data;
+}
+
+function getRandomResponse(responseArray) {
+  return responseArray[Math.floor(Math.random() * responseArray.length)];
+}
+
+function generateContextualResponse(intent, data, context = {}) {
+  const { recipeCode } = context;
+
+  switch (intent) {
+    case "greeting":
+      let greeting = getRandomResponse(CONVERSATIONAL_RESPONSES.greeting);
+      if (recipeCode) {
+        greeting += ` I see you're looking at recipe #${recipeCode} - would you like to see its latest quote or create a new one?`;
+      }
+      return greeting;
+
+    case "help":
+      return getRandomResponse(CONVERSATIONAL_RESPONSES.help);
+
+    case "recipes":
+      return "Let me show you all the recipes we have available. You'll be able to see details and create quotes directly from any of them.";
+
+    case "quotes":
+      if (recipeCode && data.recipeCode === recipeCode) {
+        return `Here are all the quotes for recipe #${recipeCode}:`;
+      } else if (data.recipeCode) {
+        return `Here are the quotes for recipe #${data.recipeCode}:`;
+      }
+      return "Here's a summary of all your recent quotes:";
+
+    case "latestQuote":
+      if (recipeCode) {
+        return `Let me find the most recent quote for recipe #${recipeCode}:`;
+      }
+      return "To get the latest quote, I need to know which recipe you're interested in. Could you specify a recipe code?";
+
+    case "createQuote":
+      if (data.recipeCode && data.volume) {
+        return `I'll help you create a new quote for recipe #${data.recipeCode} with ${data.volume}L volume. Let me set that up for you.`;
+      } else if (data.recipeCode) {
+        return `I'll help you create a new quote for recipe #${data.recipeCode}. Let me open the quote creator.`;
+      } else if (recipeCode) {
+        return `I'll help you create a new quote for recipe #${recipeCode}. Opening the quote creator now.`;
+      }
+      return "I'd be happy to help you create a new quote! Let me open the quote creator where you can specify the recipe and parameters.";
+
+    default:
+      return "I'm not sure I understand that completely. I can help you with viewing recipes, checking quotes, or creating new quotes. What would you like to do?";
+  }
+}
+
+function normalizeQuoteHead(source) {
+  if (source?.quoteNo) {
+    return {
+      quote_no: source.quoteNo,
+      recipe_name: source.recipe,
+      target_volume_l: source.targetVolumeL,
+      currency: source.currency,
+      margin_pct: source.marginPct,
+      tax_pct: source.taxPct,
+      subtotal: source.subtotal,
+      tax_amount: source.taxAmount,
+      grand_total: source.grandTotal,
+      created_at: new Date().toISOString(),
+    };
+  }
+  const q = source?.quote || source;
+  return {
+    quote_no: q?.quote_no,
+    recipe_name: q?.recipe_name,
+    target_volume_l: q?.target_volume_l,
+    currency: q?.currency,
+    margin_pct: q?.margin_pct,
+    tax_pct: q?.tax_pct,
+    subtotal: q?.subtotal,
+    tax_amount: q?.tax_amount,
+    grand_total: q?.grand_total,
+    created_at: q?.created_at,
+  };
+}
+
+function normalizeQuoteItems(items) {
+  if (!Array.isArray(items)) return [];
+  return items.map((it) => ({
+    ingredient: it.ingredient,
+    scaled_qty: toNum(it.scaled_qty ?? it.scaledQty),
+    uom: it.uom,
+    price_per_uom: toNum(it.price_per_uom ?? it.pricePerUom),
+    line_cost: toNum(it.line_cost ?? it.lineCost),
+  }));
+}
+
+/* ====== PDF (single quote) ====== */
+async function makeQuotePDF(headIn, itemsIn) {
+  const head = normalizeQuoteHead(headIn);
+  const items = normalizeQuoteItems(itemsIn);
+
+  const { default: jsPDF } = await import("jspdf");
+  const atMod = await import("jspdf-autotable");
+  const autoTable = atMod.default || atMod.autoTable || atMod;
+
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+
+  doc.setFontSize(16);
+  doc.text(`Quote ${head.quote_no || ""}`, 40, 40);
+  doc.setFontSize(11);
+  doc.text(
+    `${head.recipe_name || ""} • ${toNum(head.target_volume_l)} L`,
+    40,
+    60
+  );
+  doc.text(new Date(head.created_at || Date.now()).toLocaleString(), 40, 78);
+
+  const body = items.map((it) => [
+    it.ingredient,
+    toNum(it.scaled_qty).toLocaleString(),
+    it.uom,
+    `${sym(head.currency)}${toNum(it.price_per_uom).toLocaleString()}`,
+    `${sym(head.currency)}${toNum(it.line_cost).toLocaleString()}`,
+  ]);
+
+  autoTable(doc, {
+    head: [["Ingredient", "Qty", "UoM", "Price/UoM", "Line Cost"]],
+    body,
+    startY: 100,
+    styles: { fontSize: 10, cellPadding: 6 },
+    headStyles: { fillColor: [234, 88, 12] },
+    alternateRowStyles: { fillColor: [245, 247, 250] },
+    margin: { left: 40, right: 40 },
+  });
+
+  const y = (doc.lastAutoTable && doc.lastAutoTable.finalY) || 120;
+  doc.setFontSize(12);
+  doc.text(
+    `Subtotal: ${sym(head.currency)}${toNum(head.subtotal).toLocaleString()}`,
+    40,
+    y + 28
+  );
+  doc.text(
+    `Tax: ${sym(head.currency)}${toNum(
+      head.tax_amount
+    ).toLocaleString()} (${toNum(head.tax_pct)}%)`,
+    40,
+    y + 46
+  );
+  doc.setFont(undefined, "bold");
+  doc.text(
+    `Grand Total: ${sym(head.currency)}${toNum(
+      head.grand_total
+    ).toLocaleString()}`,
+    40,
+    y + 66
+  );
+  doc.setFont(undefined, "normal");
+
+  return doc;
+}
+
+/* ====== Main widget ====== */
+export default function ChatCPQWidget() {
+  const { pathname } = useLocation();
+  const [externalCreate, setExternalCreate] = useState(null);
+
+  const recipeCode = useMemo(
+    () => extractRecipeCodeFromPath(pathname),
+    [pathname]
+  );
+
+  useEffect(() => {
+    function onOpen(e) {
+      setIsOpen(true);
+      const d = e?.detail || {};
+
+      if (d.route === "create") {
+        setShowCreateDrawer(true);
+        setFullView(true);
+        setExternalCreate({
+          recipeCode: d.recipeCode || "",
+          targetVolumeL: d?.defaults?.targetVolumeL,
+        });
+        return;
+      }
+
+      if (d.route === "view-quote" && d.quoteId) {
+        setFullView(true);
+        simulateTyping(async () => {
+          const data = await fetchQuoteById(d.quoteId);
+          if (data?.quote || data?.items) {
+            pushAssistant({
+              type: "quote_detail",
+              payload: { head: data.quote || {}, items: data.items || [] },
+            });
+          } else {
+            pushAssistant({
+              type: "text",
+              text: `No quote found for id: ${d.quoteId}`,
+            });
+          }
+        });
+        return;
+      }
+    }
+
+    window.addEventListener("cpq:open", onOpen);
+    return () => window.removeEventListener("cpq:open", onOpen);
+  }, []);
+
+  const [isOpen, setIsOpen] = useState(false);
+  const [fullView, setFullView] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [input, setInput] = useState("");
+  const [showCreateDrawer, setShowCreateDrawer] = useState(false);
+  const [pdfPreview, setPdfPreview] = useState(null);
+  const [fullQuote, setFullQuote] = useState(null);
+
+  const [messages, setMessages] = useState([
+    {
+      id: "hello",
+      role: "assistant",
+      type: "text",
+      text: recipeCode
+        ? `Hello! I see you're looking at recipe #${recipeCode}. I'm your CPQ assistant and I can help you view its latest quote, create a new one, or explore other recipes and quotes. What would you like to do?`
+        : `Hello! I'm your CPQ assistant. I can show you all recipes, review quote history, find specific quotes, or help you create new ones. Just ask me naturally - what would you like to work on today?`,
+    },
+  ]);
+
+  const threadRef = useRef(null);
+  const endRef = useRef(null);
+  const scrollToEnd = () => {
+    try {
+      endRef.current?.scrollIntoView({ behavior: "smooth" });
+    } catch {}
+    try {
+      if (threadRef.current)
+        threadRef.current.scrollTop = threadRef.current.scrollHeight;
+    } catch {}
+  };
+
+  useEffect(() => {
+    scrollToEnd();
+  }, [messages, busy, isOpen, fullView, showCreateDrawer]);
+
+  function pushAssistant(payload) {
+    setMessages((m) => [
+      ...m,
+      {
+        id: `as_${Date.now()}_${Math.random()}`,
+        role: "assistant",
+        ...payload,
+      },
+    ]);
+  }
+
+  function pushUser(text) {
+    setMessages((m) => [
+      ...m,
+      {
+        id: `u_${Date.now()}_${Math.random()}`,
+        role: "user",
+        type: "text",
+        text,
+      },
+    ]);
+  }
+
+  const simulateTyping = async (fn) => {
+    setBusy(true);
+    await new Promise((r) => setTimeout(r, 650 + Math.random() * 700));
+    try {
+      await fn();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /* ====== API helpers ====== */
+  async function getAllQuotes() {
+    const data = await fetchAllQuotes();
+    return Array.isArray(data) ? data : data?.quotes || [];
+  }
+
+  async function fetchLatestFor(code) {
+    const all = await getAllQuotes();
+    const list = all.filter(
+      (q) => (q.recipe_code || "").toLowerCase() === String(code).toLowerCase()
+    );
+    list.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    const latest = list[0];
+    if (!latest) return null;
+    const detail = await fetchQuoteById(latest.id);
+    return { head: detail?.quote || {}, items: detail?.items || [] };
+  }
+
+  /* ====== Enhanced Natural Language Commands ====== */
+  async function handleSend(e) {
+    e?.preventDefault?.();
+    const msg = input.trim();
+    if (!msg) return;
+
+    pushUser(msg);
+    setInput("");
+
+    try {
+      const { intent, extractedData } = detectIntent(msg);
+
+      switch (intent) {
+        case "greeting":
+          await simulateTyping(async () => {
+            const response = generateContextualResponse(intent, extractedData, {
+              recipeCode,
+            });
+            pushAssistant({ type: "text", text: response });
+          });
+          break;
+
+        case "recipes":
+          await simulateTyping(async () => {
+            pushAssistant({
+              type: "text",
+              text: generateContextualResponse(intent, extractedData, {
+                recipeCode,
+              }),
+            });
+
+            const list = await fetchAllRecipes();
+            if (!Array.isArray(list) || !list.length) {
+              pushAssistant({
+                type: "text",
+                text: "It looks like there are no recipes available right now. You might want to check with your admin or try again later.",
+              });
+            } else {
+              pushAssistant({ type: "recipes_grid", recipes: list });
+            }
+          });
+          break;
+
+        case "quotes":
+          await simulateTyping(async () => {
+            const list = await getAllQuotes();
+            let filteredList = list;
+
+            if (extractedData.recipeCode) {
+              filteredList = list.filter(
+                (q) =>
+                  (q.recipe_code || "").toLowerCase() ===
+                  extractedData.recipeCode.toLowerCase()
+              );
+            }
+
+            pushAssistant({
+              type: "text",
+              text: generateContextualResponse(intent, extractedData, {
+                recipeCode,
+              }),
+            });
+
+            if (!filteredList.length) {
+              const noResultsMsg = extractedData.recipeCode
+                ? `No quotes found for recipe #${extractedData.recipeCode}. Would you like to create the first one?`
+                : getRandomResponse(CONVERSATIONAL_RESPONSES.noResults);
+              pushAssistant({ type: "text", text: noResultsMsg });
+            } else {
+              pushAssistant({
+                type: "quotes",
+                quotes: filteredList,
+                recipeLabel: extractedData.recipeCode
+                  ? `#${extractedData.recipeCode}`
+                  : undefined,
+              });
+            }
+          });
+          break;
+
+        case "latestQuote":
+          await simulateTyping(async () => {
+            if (!recipeCode && !extractedData.recipeCode) {
+              pushAssistant({
+                type: "text",
+                text: generateContextualResponse(intent, extractedData, {
+                  recipeCode,
+                }),
+              });
+              return;
+            }
+
+            const targetRecipe = extractedData.recipeCode || recipeCode;
+            pushAssistant({
+              type: "text",
+              text: `Looking up the latest quote for recipe #${targetRecipe}...`,
+            });
+
+            const payload = await fetchLatestFor(targetRecipe);
+            if (!payload) {
+              pushAssistant({
+                type: "text",
+                text: `I couldn't find any quotes for recipe #${targetRecipe} yet. Would you like to create the first one?`,
+              });
+            } else {
+              pushAssistant({ type: "quote_detail", payload });
+            }
+          });
+          break;
+
+        case "createQuote":
+          await simulateTyping(async () => {
+            const response = generateContextualResponse(intent, extractedData, {
+              recipeCode,
+            });
+            pushAssistant({ type: "text", text: response });
+
+            setShowCreateDrawer(true);
+            setFullView(true);
+
+            if (extractedData.recipeCode || extractedData.volume) {
+              setExternalCreate({
+                recipeCode: extractedData.recipeCode || recipeCode || "",
+                targetVolumeL: extractedData.volume || undefined,
+              });
+            }
+          });
+          break;
+
+        case "help":
+          await simulateTyping(async () => {
+            pushAssistant({
+              type: "text",
+              text: generateContextualResponse(intent, extractedData, {
+                recipeCode,
+              }),
+            });
+          });
+          break;
+
+        case "specific_recipe":
+          await simulateTyping(async () => {
+            const targetRecipe = extractedData.recipeCode;
+            pushAssistant({
+              type: "text",
+              text: `Let me find information about recipe #${targetRecipe}...`,
+            });
+
+            const payload = await fetchLatestFor(targetRecipe);
+            if (!payload) {
+              pushAssistant({
+                type: "text",
+                text: `I found recipe #${targetRecipe} but there are no quotes for it yet. Would you like to create one?`,
+              });
+            } else {
+              pushAssistant({
+                type: "text",
+                text: `Here's the latest quote for recipe #${targetRecipe}:`,
+              });
+              pushAssistant({ type: "quote_detail", payload });
+            }
+          });
+          break;
+
+        default:
+          await simulateTyping(async () => {
+            pushAssistant({
+              type: "text",
+              text: generateContextualResponse("unknown", extractedData, {
+                recipeCode,
+              }),
+            });
+          });
+          break;
+      }
+    } catch (err) {
+      setBusy(false);
+      pushAssistant({
+        type: "text",
+        text: `I encountered an issue: ${
+          err.message || "Something went wrong"
+        }. Please try again or let me know if you need help with something else.`,
+      });
+    }
+  }
+
+  /* ====== Render ====== */
+  return (
+    <>
+      {/* Launcher */}
+      {!isOpen && (
+        <button
+          onClick={() => setIsOpen(true)}
+          className="fixed right-[max(1.25rem,env(safe-area-inset-right))] bottom-[max(1.25rem,env(safe-area-inset-bottom))] z-50 h-14 w-14 rounded-full text-white shadow-[0_10px_28px_rgba(234,88,12,0.35)] hover:shadow-[0_14px_36px_rgba(234,88,12,0.45)] active:scale-[0.98] transition-all"
+          style={{
+            background:
+              "linear-gradient(135deg,#ea580c 0%,#f97316 55%,#fb923c 100%)",
+          }}
+          aria-label="Open CPQ Assistant"
+        >
+          <MessageCircle className="w-6 h-6 m-auto" />
+        </button>
+      )}
+
+      {/* Modal (compact ↔ full) */}
+      {isOpen && (
+        <div
+          className={`fixed inset-0 z-[60] grid bg-black/40 backdrop-blur-sm ${
+            fullView ? "place-items-center p-4" : "items-end justify-end p-0"
+          }`}
+          onClick={() => setIsOpen(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className={`relative flex max-h-[92vh] flex-col overflow-hidden ${
+              UI.bevelLg
+            } ${UI.shadow} bg-white ${UI.border} transition-all
+              ${
+                fullView
+                  ? "h-[min(92vh,820px)] w-[min(96vw,1180px)] animate-[scaleIn_280ms_ease]"
+                  : "h-[min(88vh,620px)] w-[min(100vw,440px)] animate-[slideUp_240ms_ease]"
+              }
+            `}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div
+              className={`relative ${UI.surface} ${UI.border} px-5 pt-2 pb-3`}
+            >
+              <div
+                aria-hidden
+                className="absolute inset-x-0 top-0 h-[3px]"
+                style={{
+                  background: "linear-gradient(90deg,#ea580c, #fb923c)",
+                }}
+              />
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span
+                    className="grid h-10 w-10 place-items-center rounded-full text-white"
+                    style={{
+                      background: "linear-gradient(180deg,#ea580c,#f97316)",
+                      boxShadow:
+                        "0 6px 18px rgba(234,88,12,0.28), inset 0 1px 0 rgba(255,255,255,0.25)",
+                    }}
+                  >
+                    <Bot className="w-5 h-5" />
+                  </span>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-semibold tracking-tight">
+                        CPQ Assistant
+                      </h3>
+                      <span className="rounded-full bg-black/80 px-2 py-0.5 text-[10px] font-semibold text-white">
+                        AI
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Online {fullView && "• Full View"}{" "}
+                      {recipeCode ? `• context: #${recipeCode}` : ""}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    title={fullView ? "Compact view" : "Full view"}
+                    onClick={() => setFullView((v) => !v)}
+                    className={`grid h-9 w-9 place-items-center rounded-full ${UI.border} ${UI.surface} ${UI.ring} hover:shadow-sm`}
+                  >
+                    {fullView ? (
+                      <Minimize2 className="w-4 h-4" />
+                    ) : (
+                      <Maximize2 className="w-4 h-4" />
+                    )}
+                  </button>
+                  <button
+                    onClick={() => setIsOpen(false)}
+                    className={`grid h-9 w-9 place-items-center rounded-full ${UI.border} ${UI.surface} ${UI.ring} hover:shadow-sm`}
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div
+              className={`${
+                fullView ? "grid grid-cols-5" : "block"
+              } flex-1 min-h-0`}
+            >
+              <div
+                className={`${
+                  fullView ? "col-span-5" : ""
+                } flex h-full min-h-0 flex-col`}
+              >
+                {/* Quick chips */}
+                <div className={`${UI.surface} ${UI.border} px-4 py-2`}>
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {/* All Quotes */}
+                    <Chip
+                      onClick={async () => {
+                        await simulateTyping(async () => {
+                          const list = await getAllQuotes();
+                          pushAssistant({
+                            type: "text",
+                            text: "Here's a summary of all your recent quotes:",
+                          });
+                          list.length
+                            ? pushAssistant({ type: "quotes", quotes: list })
+                            : pushAssistant({
+                                type: "text",
+                                text: "No quotes found yet. Would you like to create your first one?",
+                              });
+                        });
+                      }}
+                    >
+                      <ListOrdered className="w-3.5 h-3.5" /> All Quotes
+                    </Chip>
+
+                    {/* All Recipes */}
+                    <Chip
+                      onClick={async () => {
+                        await simulateTyping(async () => {
+                          pushAssistant({
+                            type: "text",
+                            text: "Let me show you all the recipes we have available. You'll be able to see details and create quotes directly from any of them.",
+                          });
+                          const list = await fetchAllRecipes();
+                          list.length
+                            ? pushAssistant({
+                                type: "recipes_grid",
+                                recipes: list,
+                              })
+                            : pushAssistant({
+                                type: "text",
+                                text: "It looks like there are no recipes available right now. You might want to check with your admin or try again later.",
+                              });
+                        });
+                      }}
+                    >
+                      <RefreshCcw className="w-3.5 h-3.5" /> All Recipes
+                    </Chip>
+
+                    {recipeCode ? (
+                      <>
+                        {/* Latest quote for this recipe */}
+                        <Chip
+                          onClick={async () => {
+                            await simulateTyping(async () => {
+                              pushAssistant({
+                                type: "text",
+                                text: `Looking up the latest quote for recipe #${recipeCode}...`,
+                              });
+                              const payload = await fetchLatestFor(recipeCode);
+                              payload
+                                ? pushAssistant({
+                                    type: "quote_detail",
+                                    payload,
+                                  })
+                                : pushAssistant({
+                                    type: "text",
+                                    text: `I couldn't find any quotes for recipe #${recipeCode} yet. Would you like to create the first one?`,
+                                  });
+                            });
+                          }}
+                        >
+                          <Eye className="w-3.5 h-3.5" /> Latest Quote for #
+                          {recipeCode}
+                        </Chip>
+
+                        {/* Filter quotes for this recipe */}
+                        <Chip
+                          onClick={async () => {
+                            await simulateTyping(async () => {
+                              const all = await getAllQuotes();
+                              const filtered = all.filter(
+                                (q) =>
+                                  (q.recipe_code || "").toLowerCase() ===
+                                  String(recipeCode).toLowerCase()
+                              );
+                              pushAssistant({
+                                type: "text",
+                                text: `Here are all the quotes for recipe #${recipeCode}:`,
+                              });
+                              filtered.length
+                                ? pushAssistant({
+                                    type: "quotes",
+                                    quotes: filtered,
+                                    recipeLabel: `#${recipeCode}`,
+                                  })
+                                : pushAssistant({
+                                    type: "text",
+                                    text: `No quotes found for recipe #${recipeCode} yet. Would you like to create the first one?`,
+                                  });
+                            });
+                          }}
+                        >
+                          <ListOrdered className="w-3.5 h-3.5" /> All Quotes for
+                          #{recipeCode}
+                        </Chip>
+
+                        {/* Create quote for this recipe */}
+                        <Chip
+                          onClick={async () => {
+                            await simulateTyping(async () => {
+                              pushAssistant({
+                                type: "text",
+                                text: `I'll help you create a new quote for recipe #${recipeCode}. Opening the quote creator now.`,
+                              });
+                              setShowCreateDrawer(true);
+                              setFullView(true);
+                            });
+                          }}
+                        >
+                          <Plus className="w-3.5 h-3.5" /> Create Quote for #
+                          {recipeCode}
+                        </Chip>
+                      </>
+                    ) : (
+                      <Chip
+                        onClick={async () => {
+                          await simulateTyping(async () => {
+                            pushAssistant({
+                              type: "text",
+                              text: "I'd be happy to help you create a new quote! Let me open the quote creator where you can specify the recipe and parameters.",
+                            });
+                            setShowCreateDrawer(true);
+                            setFullView(true);
+                          });
+                        }}
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Create Quote
+                      </Chip>
+                    )}
+                  </div>
+                </div>
+
+                {/* Thread */}
+                <div
+                  ref={threadRef}
+                  className="flex-1 min-h-0 space-y-4 overflow-y-auto overscroll-contain bg-gradient-to-b from-neutral-50 to-white p-5"
+                >
+                  {messages.map((m) => (
+                    <div
+                      key={m.id}
+                      className={`flex ${
+                        m.role === "user" ? "justify-end" : "justify-start"
+                      }`}
+                    >
+                      <div
+                        className={`flex gap-2 max-w-[85%] ${
+                          m.role === "user" ? "flex-row-reverse" : ""
+                        }`}
+                      >
+                        {/* Assistant avatar */}
+                        {m.role === "assistant" && (
+                          <div className="flex-shrink-0">
+                            <div className="h-8 w-8 rounded-2xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center shadow-md">
+                              <Bot className="w-4 h-4 text-white" />
+                            </div>
+                          </div>
+                        )}
+
+                        <div
+                          className={
+                            m.type === "text"
+                              ? `relative ${UI.bevel} px-4 py-3 ${UI.subtleShadow} ` +
+                                (m.role === "user"
+                                  ? "bg-slate-900 text-white rounded-br-lg"
+                                  : `${UI.border} ${UI.surface} text-slate-800 rounded-bl-lg`)
+                              : `w-full ${UI.bevel} px-4 py-3 ${UI.subtleShadow} ${UI.border} ${UI.surface} text-slate-800`
+                          }
+                        >
+                          {/* TEXT */}
+                          {m.type === "text" && (
+                            <p className="whitespace-pre-line text-sm">
+                              {m.text}
+                            </p>
+                          )}
+
+                          {/* QUOTES LIST */}
+                          {m.type === "quotes" && (
+                            <QuotesTable
+                              quotes={m.quotes || []}
+                              onView={async (id) => {
+                                await simulateTyping(async () => {
+                                  const data = await fetchQuoteById(id);
+                                  pushAssistant({
+                                    type: "quote_detail",
+                                    payload: {
+                                      head: data?.quote || {},
+                                      items: data?.items || [],
+                                    },
+                                  });
+                                });
+                              }}
+                            />
+                          )}
+
+                          {/* QUOTE DETAIL */}
+                          {m.type === "quote_detail" && (
+                            <QuoteDetailCard
+                              payload={m.payload}
+                              onDownload={async () => {
+                                const doc = await makeQuotePDF(
+                                  m.payload.head,
+                                  m.payload.items
+                                );
+                                doc.save(
+                                  `${m.payload.head?.quote_no || "quote"}.pdf`
+                                );
+                              }}
+                              onFull={() =>
+                                setFullQuote({
+                                  head: m.payload.head,
+                                  items: m.payload.items,
+                                })
+                              }
+                            />
+                          )}
+
+                          {/* QUOTE CREATED */}
+                          {m.type === "quote_created" && (
+                            <QuoteCreatedSummary payload={m.payload} />
+                          )}
+
+                          {/* PDF CARD */}
+                          {m.type === "pdf_card" && (
+                            <PdfReadyCard
+                              title={m.title}
+                              url={m.url}
+                              filename={m.filename}
+                              cleanup={m.cleanup}
+                              onPreview={() => {
+                                setFullQuote(null);
+                                setPdfPreview({
+                                  url: m.url,
+                                  filename: m.filename,
+                                  cleanup: m.cleanup,
+                                });
+                              }}
+                            />
+                          )}
+
+                          {/* RECIPES GRID MESSAGE */}
+                          {m.type === "recipes_grid" && (
+                            <RecipesGrid
+                              recipes={m.recipes || []}
+                              onCreateQuote={(code, baseL) => {
+                                setExternalCreate({
+                                  recipeCode: code,
+                                  targetVolumeL: Number(baseL || 1),
+                                });
+                                setShowCreateDrawer(true);
+                                setFullView(true);
+                              }}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  {busy && <Typing />}
+                  <div ref={endRef} />
+                </div>
+
+                {/* Composer */}
+                <div className={`${UI.surface} ${UI.border} p-4`}>
+                  <form onSubmit={handleSend} className="flex items-end gap-3">
+                    <textarea
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSend(e);
+                        }
+                      }}
+                      //   placeholder='Ask naturally: "Show me all recipes", "Create a quote for PICK-001", "What\'s the latest quote?", etc.'
+
+                      className="min-h-12 max-h-32 w-full resize-none rounded-xl border-2 border-neutral-200 bg-neutral-50 px-4 py-3 text-sm outline-none transition focus:border-orange-300"
+                    />
+                    <button
+                      disabled={!input.trim() || busy}
+                      className={`grid h-11 w-11 place-items-center rounded-xl text-white ${
+                        UI.ring
+                      } ${
+                        input.trim() && !busy
+                          ? "bg-orange-600 hover:bg-orange-700"
+                          : "cursor-not-allowed bg-slate-300"
+                      }`}
+                      aria-label="Send"
+                    >
+                      {busy ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Send className="w-4 h-4" />
+                      )}
+                    </button>
+                  </form>
+                  <div className="mt-2 text-center text-[11px] text-slate-400">
+                    Ask me anything about recipes and quotes • Enter to send
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Create Quote Drawer */}
+            <QuoteDrawer
+              open={showCreateDrawer}
+              recipeDefault={externalCreate?.recipeCode ?? recipeCode}
+              initialTargetVolumeL={externalCreate?.targetVolumeL}
+              onClose={() => {
+                setShowCreateDrawer(false);
+                setExternalCreate(null);
+              }}
+              onSubmit={async (payload) => {
+                try {
+                  await simulateTyping(async () => {
+                    const created = await createQuote(payload);
+
+                    pushAssistant({
+                      type: "text",
+                      text: `Perfect! I've created your new quote successfully. Here's the summary:`,
+                    });
+
+                    pushAssistant({ type: "quote_created", payload: created });
+
+                    const doc = await makeQuotePDF(
+                      created,
+                      created.items || []
+                    );
+                    const blob = doc.output("blob");
+                    const url = URL.createObjectURL(blob);
+                    pushAssistant({
+                      type: "pdf_card",
+                      title: `Quote ${created.quoteNo}`,
+                      url,
+                      filename: `${created.quoteNo || "quote"}.pdf`,
+                      cleanup: () => URL.revokeObjectURL(url),
+                    });
+
+                    setShowCreateDrawer(false);
+                  });
+                } catch (e) {
+                  pushAssistant({
+                    type: "text",
+                    text: `I encountered an issue creating the quote: ${
+                      e.message || "Something went wrong"
+                    }. Please try again or let me know if you need help.`,
+                  });
+                }
+              }}
+            />
+          </div>
+
+          <style>{`@keyframes slideUp{from{transform:translateY(100%);opacity:0}to{transform:translateY(0);opacity:1}}
+@keyframes scaleIn{from{transform:scale(.96);opacity:0}to{transform:scale(1);opacity:1}}`}</style>
+        </div>
+      )}
+
+      {/* Full Quote Modal */}
+      {fullQuote && (
+        <div
+          className="fixed inset-0 z-[70] grid place-items-center bg-black/40 backdrop-blur-sm p-4"
+          onClick={() => setFullQuote(null)}
+        >
+          <div
+            className={`relative w-[min(96vw,920px)] max-h-[92vh] overflow-auto ${UI.bevelLg} ${UI.border} ${UI.surface} ${UI.shadow}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              className="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-full border bg-white/80"
+              onClick={() => setFullQuote(null)}
+              aria-label="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <div className="p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold">
+                  Quote {normalizeQuoteHead(fullQuote.head).quote_no}
+                </h3>
+                <button
+                  className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
+                  onClick={async () => {
+                    const doc = await makeQuotePDF(
+                      fullQuote.head,
+                      fullQuote.items
+                    );
+                    doc.save(
+                      `${
+                        normalizeQuoteHead(fullQuote.head).quote_no || "quote"
+                      }.pdf`
+                    );
+                  }}
+                >
+                  <FileDown className="w-4 h-4" /> Download PDF
+                </button>
+              </div>
+              <FullQuoteBody head={fullQuote.head} items={fullQuote.items} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PDF Preview Modal */}
+      {pdfPreview && (
+        <div
+          className="fixed inset-0 z-[80] grid place-items-center bg-black/40 p-4"
+          onClick={() => {
+            pdfPreview.cleanup?.();
+            setPdfPreview(null);
+          }}
+        >
+          <div
+            className="relative w-[min(96vw,920px)] h-[min(92vh,720px)] rounded-2xl border bg-white shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              className="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-full border bg-white/80"
+              onClick={() => {
+                pdfPreview.cleanup?.();
+                setPdfPreview(null);
+              }}
+              aria-label="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <div className="h-12 px-4 flex items-center justify-between border-b">
+              <div className="font-semibold text-sm">
+                {pdfPreview.filename || "quote.pdf"}
+              </div>
+              <button
+                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
+                onClick={() => {
+                  const a = document.createElement("a");
+                  a.href = pdfPreview.url;
+                  a.download = pdfPreview.filename || "quote.pdf";
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                }}
+              >
+                <FileDown className="w-4 h-4" /> Download
+              </button>
+            </div>
+            <iframe
+              title="quote-pdf"
+              src={pdfPreview.url}
+              className="w-full h-[calc(100%-48px)]"
+            />
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ====== Atoms & subcomponents ====== */
+function Chip({ children, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="whitespace-nowrap rounded-full border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-neutral-50 inline-flex items-center gap-1"
+    >
+      {children}
+    </button>
+  );
+}
+
+function ChipPlain({ label, value }) {
+  return (
+    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1">
+      <span className="text-slate-500">{label}</span>
+      <span className="font-semibold">{value}</span>
+    </span>
+  );
+}
+
+function Kpi({ label, value, strong }) {
+  return (
+    <div
+      className={`rounded-xl border px-3 py-2 ${
+        strong
+          ? "border-orange-200 bg-orange-50"
+          : "border-slate-200 bg-slate-50"
+      }`}
+    >
+      <div className="text-xs text-slate-600">{label}</div>
+      <div
+        className={`text-sm ${
+          strong ? "font-bold text-slate-900" : "font-semibold"
+        }`}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function Typing() {
+  return (
+    <div className="flex justify-start">
+      <div className="flex items-center gap-2">
+        <div className="h-8 w-8 rounded-2xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center shadow-md">
+          <Bot className="w-4 h-4 text-white" />
+        </div>
+        <div
+          className={`rounded-3xl rounded-bl-lg ${UI.border} ${UI.surface} px-4 py-3 ${UI.subtleShadow}`}
+        >
+          <div className="flex items-center gap-1.5">
+            <span className="h-2 w-2 animate-bounce rounded-full bg-orange-400 [animation-delay:0ms]"></span>
+            <span className="h-2 w-2 animate-bounce rounded-full bg-amber-400 [animation-delay:200ms]"></span>
+            <span className="h-2 w-2 animate-bounce rounded-full bg-orange-400 [animation-delay:400ms]"></span>
+            <span className="ml-2 text-xs text-slate-400">Thinking…</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label className="grid gap-1">
+      <span className="text-xs text-slate-700">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+/* ====== QUOTES TABLE ====== */
+function QuotesTable({ quotes, onView }) {
+  return (
+    <div className="w-full">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="font-semibold text-sm">Recent Quotes</div>
+      </div>
+      <div className="max-h-72 overflow-auto border rounded-xl">
+        <table className="w-full text-sm">
+          <thead className="sticky top-0 bg-slate-50 text-slate-600">
+            <tr>
+              <th className="text-left py-2 px-3 border-b">Quote No</th>
+              <th className="text-left py-2 px-3 border-b">Recipe</th>
+              <th className="text-left py-2 px-3 border-b">Volume (L)</th>
+              <th className="text-left py-2 px-3 border-b">Total</th>
+              <th className="text-left py-2 px-3 border-b"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {quotes.map((q, i) => (
+              <tr key={q.quote_no} className={i % 2 ? "bg-slate-50/60" : ""}>
+                <td className="py-2 px-3 border-b font-medium">{q.quote_no}</td>
+                <td className="py-2 px-3 border-b">{q.recipe_name}</td>
+                <td className="py-2 px-3 border-b">
+                  {toNum(q.target_volume_l)}
+                </td>
+                <td className="py-2 px-3 border-b font-semibold text-slate-900">
+                  {sym(q.currency)}
+                  {toNum(q.grand_total).toLocaleString()}
+                </td>
+                <td className="py-2 px-3 border-b text-right">
+                  <button
+                    className="text-xs rounded-lg border px-2 py-1 hover:bg-slate-50 inline-flex items-center gap-1"
+                    onClick={() => onView(q.id)}
+                  >
+                    <Eye className="w-3.5 h-3.5" /> View
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ====== QUOTE DETAIL CARD ====== */
+function QuoteDetailCard({ payload, onDownload, onFull }) {
+  const head = payload?.head || {};
+  const items = payload?.items || [];
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="font-semibold">Quote {head?.quote_no}</div>
+        <div className="text-xs text-slate-500">
+          {head?.recipe_name} • {toNum(head?.target_volume_l)} L
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
+        <Kpi
+          label="Subtotal"
+          value={`${sym(head.currency)}${toNum(
+            head.subtotal
+          ).toLocaleString()}`}
+        />
+        <Kpi
+          label="Tax"
+          value={`${sym(head.currency)}${toNum(
+            head.tax_amount
+          ).toLocaleString()}`}
+        />
+        <Kpi
+          label="Grand Total"
+          strong
+          value={`${sym(head.currency)}${toNum(
+            head.grand_total
+          ).toLocaleString()}`}
+        />
+      </div>
+      <div className="rounded-xl border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600">
+            <tr>
+              <th className="text-left py-2 px-3 border-b">Ingredient</th>
+              <th className="text-left py-2 px-3 border-b">Qty</th>
+              <th className="text-left py-2 px-3 border-b">UoM</th>
+              <th className="text-left py-2 px-3 border-b">Price/UoM</th>
+              <th className="text-left py-2 px-3 border-b">Line Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((it, i) => (
+              <tr
+                key={`${it.ingredient}-${i}`}
+                className={i % 2 ? "bg-slate-50/60" : ""}
+              >
+                <td className="py-2 px-3 border-b">{it.ingredient}</td>
+                <td className="py-2 px-3 border-b">
+                  {toNum(it.scaled_qty).toLocaleString()}
+                </td>
+                <td className="py-2 px-3 border-b">{it.uom}</td>
+                <td className="py-2 px-3 border-b">
+                  {sym(head.currency)}
+                  {toNum(it.price_per_uom).toLocaleString()}
+                </td>
+                <td className="py-2 px-3 border-b">
+                  {sym(head.currency)}
+                  {toNum(it.line_cost).toLocaleString()}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        <button
+          className="text-xs rounded-lg border px-3 py-2 hover:bg-slate-50 inline-flex items-center gap-2"
+          onClick={onDownload}
+        >
+          <FileDown className="w-4 h-4" /> Download PDF
+        </button>
+        <button
+          className="text-xs rounded-lg bg-orange-600 text-white px-3 py-2 hover:bg-orange-700 inline-flex items-center gap-2"
+          onClick={onFull}
+        >
+          <Maximize2 className="w-4 h-4" /> Full View
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ====== QUOTE CREATED SUMMARY ====== */
+function QuoteCreatedSummary({ payload }) {
+  return (
+    <div className="space-y-2">
+      <div className="font-semibold">Quote Created Successfully!</div>
+      <div className="flex flex-wrap gap-2 text-xs">
+        <ChipPlain label="Quote No" value={payload.quoteNo} />
+        <ChipPlain label="Recipe" value={payload.recipe} />
+        <ChipPlain label="Volume" value={`${toNum(payload.targetVolumeL)} L`} />
+        <ChipPlain label="Margin" value={`${toNum(payload.marginPct)}%`} />
+        <ChipPlain label="Tax" value={`${toNum(payload.taxPct)}%`} />
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
+        <Kpi
+          label="Subtotal"
+          value={`${sym(payload.currency)}${toNum(
+            payload.subtotal
+          ).toLocaleString()}`}
+        />
+        <Kpi
+          label="Tax"
+          value={`${sym(payload.currency)}${toNum(
+            payload.taxAmount
+          ).toLocaleString()}`}
+        />
+        <Kpi
+          label="Grand Total"
+          strong
+          value={`${sym(payload.currency)}${toNum(
+            payload.grandTotal
+          ).toLocaleString()}`}
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ====== PDF READY CARD ====== */
+function PdfReadyCard({ title, url, filename, cleanup, onPreview }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="font-semibold text-sm">{title}</div>
+        <div className="flex items-center gap-2">
+          <button
+            className="text-xs rounded-md border px-2 py-1 hover:bg-slate-50"
+            onClick={onPreview}
+          >
+            Preview
+          </button>
+          <button
+            className="text-xs rounded-md bg-orange-600 px-2 py-1 text-white hover:bg-orange-700"
+            onClick={() => {
+              try {
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = filename || "quote.pdf";
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+              } catch {}
+            }}
+          >
+            Download PDF
+          </button>
+        </div>
+      </div>
+      <div className="text-xs text-slate-500">
+        Your PDF is ready! You can preview it or download it directly.
+      </div>
+    </div>
+  );
+}
+
+/* ====== FULL QUOTE BODY ====== */
+function FullQuoteBody({ head, items }) {
+  const q = normalizeQuoteHead(head);
+  const its = normalizeQuoteItems(items);
+  return (
+    <>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        <Kpi label="Recipe" value={q.recipe_name} />
+        <Kpi label="Volume" value={`${toNum(q.target_volume_l)} L`} />
+        <Kpi label="Margin" value={`${toNum(q.margin_pct)}%`} />
+        <Kpi label="Tax" value={`${toNum(q.tax_pct)}%`} />
+        <Kpi
+          label="Subtotal"
+          value={`${sym(q.currency)}${toNum(q.subtotal).toLocaleString()}`}
+        />
+        <Kpi
+          label="Grand Total"
+          strong
+          value={`${sym(q.currency)}${toNum(q.grand_total).toLocaleString()}`}
+        />
+      </div>
+      <div className="rounded-2xl border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600">
+            <tr>
+              <th className="text-left py-2 px-3 border-b">Ingredient</th>
+              <th className="text-left py-2 px-3 border-b">Qty</th>
+              <th className="text-left py-2 px-3 border-b">UoM</th>
+              <th className="text-left py-2 px-3 border-b">Price/UoM</th>
+              <th className="text-left py-2 px-3 border-b">Line Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {its.map((it, i) => (
+              <tr
+                key={`${it.ingredient}-${i}`}
+                className={i % 2 ? "bg-slate-50/60" : ""}
+              >
+                <td className="py-2 px-3 border-b">{it.ingredient}</td>
+                <td className="py-2 px-3 border-b">
+                  {toNum(it.scaled_qty).toLocaleString()}
+                </td>
+                <td className="py-2 px-3 border-b">{it.uom}</td>
+                <td className="py-2 px-3 border-b">
+                  {sym(q.currency)}
+                  {toNum(it.price_per_uom).toLocaleString()}
+                </td>
+                <td className="py-2 px-3 border-b">
+                  {sym(q.currency)}
+                  {toNum(it.line_cost).toLocaleString()}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="text-xs text-slate-500">
+        Created: {new Date(q.created_at || Date.now()).toLocaleString?.()}
+      </div>
+    </>
+  );
+}
+
+/* ====== Recipes Grid (inside chat message) ====== */
+function RecipesGrid({ recipes, onCreateQuote }) {
+  return (
+    <div className="w-full">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="font-semibold text-sm">Available Recipes</div>
+      </div>
+
+      {/* auto-fill responsive grid */}
+      <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
+        {recipes.map((r) => (
+          <div
+            key={r.id}
+            className="group relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm hover:shadow-md transition flex flex-col"
+          >
+            <div className="relative aspect-[4/3] bg-slate-100">
+              <img
+                src={r.image_url || RECIPE_FALLBACK}
+                alt={r.name}
+                className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
+                loading="lazy"
+                onError={(e) => (e.currentTarget.src = RECIPE_FALLBACK)}
+              />
+              {/* code pill */}
+              <div className="absolute left-2 top-2 rounded-full bg-white/90 px-2 py-0.5 text-[10px] font-semibold text-slate-700 shadow">
+                #{r.code}
+              </div>
+
+              {/* Hover overlay actions (visible on hover-capable screens) */}
+              <div className="pointer-events-none absolute inset-0 hidden sm:flex items-end justify-center bg-gradient-to-t from-black/60 via-black/20 to-transparent opacity-0 transition-opacity group-hover:opacity-100">
+                <div className="pointer-events-auto mb-3 flex gap-2">
+                  <a
+                    href={`/recipe/${encodeURIComponent(r.code)}`}
+                    className="inline-flex items-center gap-1 rounded-lg bg-white/95 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-white"
+                    title="View details"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    View Details
+                  </a>
+                  <button
+                    onClick={() => onCreateQuote(r.code, r.base_volume_l)}
+                    className="inline-flex items-center gap-1 rounded-lg bg-orange-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-orange-700"
+                    title="Create quote"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Create Quote
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div className="flex items-center justify-between px-3 py-2">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-slate-900">
+                  {r.name}
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  Base: {r.base_volume_l || "—"} L
+                </div>
+              </div>
+            </div>
+
+            {/* Mobile actions bar (always visible on small screens) */}
+            <div className="sm:hidden border-t px-3 py-2 flex justify-center gap-2">
+              <a
+                href={`/recipe/${encodeURIComponent(r.code)}`}
+                className="inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-slate-50"
+                title="View details"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                View
+              </a>
+              <button
+                onClick={() => onCreateQuote(r.code, r.base_volume_l)}
+                className="inline-flex items-center gap-1 rounded-lg bg-orange-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-orange-700"
+                title="Create quote"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Quote
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ====== Drawer for Create Quote ====== */
+function QuoteDrawer({
+  open,
+  recipeDefault,
+  initialTargetVolumeL,
+  onClose,
+  onSubmit,
+}) {
+  const [form, setForm] = useState({
+    recipeCode: recipeDefault || "",
+    targetVolumeL: 500,
+    costPolicyName: "Default-US",
+    marginPct: 20,
+    taxPct: 8,
+    packagingCostPerL: 0.25,
+    laborCostPerBatch: 5,
+    wastagePct: 2,
+  });
+
+  useEffect(() => {
+    setForm((f) => ({
+      ...f,
+      recipeCode: recipeDefault || f.recipeCode,
+      targetVolumeL: Number(initialTargetVolumeL || f.targetVolumeL || 500),
+    }));
+  }, [recipeDefault, initialTargetVolumeL, open]);
+
+  return (
+    <div
+      aria-hidden={!open}
+      className={`absolute inset-0 z-20 ${open ? "" : "pointer-events-none"}`}
+    >
+      {/* scrim */}
+      <div
+        className={`absolute inset-0 bg-black/30 transition-opacity ${
+          open ? "opacity-100" : "opacity-0"
+        }`}
+        onClick={onClose}
+      />
+      {/* drawer */}
+      <div
+        className={`absolute right-0 top-0 h-full w-full sm:w-[470px] bg-white ${
+          UI.border
+        } ${UI.shadow} transition-transform duration-300 ${
+          open ? "translate-x-0" : "translate-x-full"
+        }`}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="flex items-center justify-between border-b px-4 py-3">
+          <h4 className="text-sm font-semibold">Create Quote</h4>
+          <button
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-full border text-slate-600"
+            aria-label="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="h-[calc(100%-52px)] overflow-y-auto p-4">
+          <div className="grid grid-cols-1 gap-3">
+            <Field label="Recipe Code *">
+              <input
+                value={form.recipeCode}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, recipeCode: e.target.value }))
+                }
+                placeholder="e.g., PICK-001"
+                className="w-full rounded-md border px-3 py-2 text-sm focus:border-orange-300 focus:outline-none"
+              />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Target Volume (L) *">
+                <input
+                  type="number"
+                  min={1}
+                  value={form.targetVolumeL}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, targetVolumeL: e.target.value }))
+                  }
+                  className="w-full rounded-md border px-3 py-2 text-sm focus:border-orange-300 focus:outline-none"
+                />
+              </Field>
+              <Field label="Cost Policy">
+                <input
+                  value={form.costPolicyName}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, costPolicyName: e.target.value }))
+                  }
+                  className="w-full rounded-md border px-3 py-2 text-sm focus:border-orange-300 focus:outline-none"
+                />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Margin %">
+                <input
+                  type="number"
+                  value={form.marginPct}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, marginPct: e.target.value }))
+                  }
+                  className="w-full rounded-md border px-3 py-2 text-sm focus:border-orange-300 focus:outline-none"
+                />
+              </Field>
+              <Field label="Tax %">
+                <input
+                  type="number"
+                  value={form.taxPct}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, taxPct: e.target.value }))
+                  }
+                  className="w-full rounded-md border px-3 py-2 text-sm focus:border-orange-300 focus:outline-none"
+                />
+              </Field>
+              <Field label="Wastage %">
+                <input
+                  type="number"
+                  value={form.wastagePct}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, wastagePct: e.target.value }))
+                  }
+                  className="w-full rounded-md border px-3 py-2 text-sm focus:border-orange-300 focus:outline-none"
+                />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Packaging Cost / L">
+                <input
+                  type="number"
+                  step="0.01"
+                  value={form.packagingCostPerL}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      packagingCostPerL: e.target.value,
+                    }))
+                  }
+                  className="w-full rounded-md border px-3 py-2 text-sm focus:border-orange-300 focus:outline-none"
+                />
+              </Field>
+              <Field label="Labor Cost / Batch">
+                <input
+                  type="number"
+                  step="0.01"
+                  value={form.laborCostPerBatch}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      laborCostPerBatch: e.target.value,
+                    }))
+                  }
+                  className="w-full rounded-md border px-3 py-2 text-sm focus:border-orange-300 focus:outline-none"
+                />
+              </Field>
+            </div>
+
+            <div className="mt-2 flex items-center justify-end gap-2">
+              <button
+                onClick={onClose}
+                className="rounded-md border px-3 py-2 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (!form.recipeCode.trim() || !Number(form.targetVolumeL)) {
+                    alert("Please fill required fields");
+                    return;
+                  }
+                  onSubmit({
+                    recipeCode: form.recipeCode.trim(),
+                    targetVolumeL: Number(form.targetVolumeL),
+                    costPolicyName: form.costPolicyName || undefined,
+                    marginPct: Number(form.marginPct),
+                    taxPct: Number(form.taxPct),
+                    packagingCostPerL: Number(form.packagingCostPerL),
+                    laborCostPerBatch: Number(form.laborCostPerBatch),
+                    wastagePct: Number(form.wastagePct),
+                  });
+                }}
+                className="inline-flex items-center gap-2 rounded-md bg-orange-600 px-3 py-2 text-sm font-semibold text-white hover:bg-orange-700"
+              >
+                <Plus className="w-4 h-4" /> Create Quote
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

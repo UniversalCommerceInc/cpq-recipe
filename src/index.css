@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+/* optional dark backdrop gradient */
+@layer utilities {
+  .bg-grid {
+    background: radial-gradient(
+        70% 60% at 80% 10%,
+        rgba(33, 53, 90, 0.27) 0%,
+        transparent 60%
+      ),
+      radial-gradient(
+        70% 60% at 10% 90%,
+        rgba(78, 31, 138, 0.2) 0%,
+        transparent 60%
+      ),
+      #0b0d10;
+  }
+  .glass {
+    @apply bg-white/10 backdrop-blur border border-white/20 rounded-2xl;
+  }
+}
